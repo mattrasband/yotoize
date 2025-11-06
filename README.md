@@ -4,10 +4,43 @@ Extract and split audiobook chapters from embedded metadata in MP3 and M4B files
 
 ## Installation
 
-```bash
-# Install uv if you haven't already
-curl -LsSf https://astral.sh/uv/install.sh | sh
+### Prerequisites
 
+**FFmpeg** (required for audio processing):
+
+- **macOS:**
+
+  ```bash
+  brew install ffmpeg
+  ```
+
+- **Linux (Ubuntu/Debian):**
+
+  ```bash
+  sudo apt update && sudo apt install ffmpeg
+  ```
+
+- **Windows:**
+  Download from [ffmpeg.org](https://ffmpeg.org/download.html) or use Chocolatey:
+  ```bash
+  choco install ffmpeg
+  ```
+
+**uv** (Python package manager):
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Or via Homebrew on macOS:
+
+```bash
+brew install uv
+```
+
+### Install Chapterize
+
+```bash
 # Install chapterize
 uv pip install -e .
 ```

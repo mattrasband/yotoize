@@ -1,5 +1,5 @@
 [project]
-name = "chapterize"
+name = "yotoize"
 version = "0.1.0"
 description = "Extract and split audiobook chapters from embedded metadata"
 readme = "README.md"
@@ -20,7 +20,7 @@ classifiers = [
 dependencies = ["mutagen>=1.47.0", "click>=8.1.7"]
 
 [project.scripts]
-chapterize = "chapterize.cli:main"
+yotoize = "yotoize.cli:main"
 
 [build-system]
 requires = ["hatchling"]

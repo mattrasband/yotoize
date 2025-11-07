@@ -9,24 +9,6 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "chapterize"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "click" },
-    { name = "mutagen" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "click", specifier = ">=8.1.7" },
-    { name = "mutagen", specifier = ">=1.47.0" },
-]
-
-[package.metadata.requires-dev]
-dev = []
-
-[[package]]
 name = "click"
 version = "8.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -55,3 +37,21 @@ sdist = { url = "https://files.pythonhosted.org/packages/81/e6/64bc71b74eef4b68e
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b0/7a/620f945b96be1f6ee357d211d5bf74ab1b7fe72a9f1525aafbfe3aee6875/mutagen-1.47.0-py3-none-any.whl", hash = "sha256:edd96f50c5907a9539d8e5bba7245f62c9f520aef333d13392a79a4f70aca719", size = 194391, upload-time = "2023-09-03T16:33:29.955Z" },
 ]
+
+[[package]]
+name = "yotoize"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "click" },
+    { name = "mutagen" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "click", specifier = ">=8.1.7" },
+    { name = "mutagen", specifier = ">=1.47.0" },
+]
+
+[package.metadata.requires-dev]
+dev = []

@@ -1,4 +1,4 @@
-"""Command-line interface for chapterize."""
+"""Command-line interface for yotoize."""
 
 import sys
 import traceback

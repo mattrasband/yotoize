@@ -1,4 +1,4 @@
-# Chapterize
+# Yotoize
 
 Extract and split audiobook chapters from embedded metadata in MP3 and M4B files.
 
@@ -22,6 +22,7 @@ Extract and split audiobook chapters from embedded metadata in MP3 and M4B files
 
 - **Windows:**
   Download from [ffmpeg.org](https://ffmpeg.org/download.html) or use Chocolatey:
+
   ```bash
   choco install ffmpeg
   ```
@@ -38,10 +39,10 @@ Or via Homebrew on macOS:
 brew install uv
 ```
 
-### Install Chapterize
+### Install Yotoize
 
 ```bash
-# Install chapterize
+# Install yotoize
 uv pip install -e .
 ```
 
@@ -49,21 +50,21 @@ uv pip install -e .
 
 ```bash
 # Extract chapters and display them
-chapterize audiobook.m4b
+yotoize audiobook.m4b
 
 # Extract chapters and split into separate files
-chapterize audiobook.m4b --split ./chapters
+yotoize audiobook.m4b --split ./chapters
 
 # Save chapter data to JSON
-chapterize audiobook.m4b --output chapters.json
+yotoize audiobook.m4b --output chapters.json
 
 # Split into MP3 files instead of M4B
-chapterize audiobook.m4b --split ./chapters --format mp3
+yotoize audiobook.m4b --split ./chapters --format mp3
 ```
 
 ## How It Works
 
-Chapterize extracts chapter information from embedded metadata in audio files using `ffprobe`. If your audiobook file has chapter markers embedded (which many commercial audiobooks do), it will extract:
+Yotoize extracts chapter information from embedded metadata in audio files using `ffprobe`. If your audiobook file has chapter markers embedded (which many commercial audiobooks do), it will extract:
 
 - Chapter start and end times
 - Chapter titles
@@ -80,7 +81,7 @@ Then, if requested, it splits the audio file into separate chapter files using `
 ### Basic Usage
 
 ```bash
-chapterize <audio_file>
+yotoize <audio_file>
 ```
 
 Displays detected chapters with their start times, end times, durations, and titles.
@@ -96,16 +97,16 @@ Displays detected chapters with their start times, end times, durations, and tit
 
 ```bash
 # Extract and display chapters
-chapterize audiobook.m4b
+yotoize audiobook.m4b
 
 # Extract chapters and save metadata to JSON
-chapterize audiobook.m4b --output chapters.json
+yotoize audiobook.m4b --output chapters.json
 
 # Split into M4A files
-chapterize audiobook.m4b --split ./chapters --format m4a
+yotoize audiobook.m4b --split ./chapters --format m4a
 
 # Split into MP3 files with verbose output
-chapterize audiobook.m4b --split ./chapters --format mp3 --verbose
+yotoize audiobook.m4b --split ./chapters --format mp3 --verbose
 ```
 
 ## Output Format

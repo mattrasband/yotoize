@@ -1,0 +1,33 @@
+{
+  "split": {
+    "format": "mp3",
+    "filename_pattern": "{number:02d} - {title}",
+    "preserve_metadata": true,
+    "extract_cover": false,
+    "embed_cover": true,
+    "playlist": false,
+    "skip_existing": false,
+    "remove_silence": false,
+    "silence_threshold": -50.0,
+    "silence_duration": 0.5,
+    "parallel": false,
+    "max_workers": 4
+  },
+  "filter": {
+    "chapters": null,
+    "min_duration": null,
+    "max_duration": null,
+    "title_pattern": null,
+    "merge": []
+  },
+  "rename": {
+    "1": "Introduction",
+    "2": "Getting Started"
+  },
+  "output": {
+    "statistics": false,
+    "validate": false,
+    "log": null,
+    "verbose": false
+  }
+}

@@ -17,10 +17,16 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 
-dependencies = ["mutagen>=1.47.0", "click>=8.1.7"]
+dependencies = [
+    "mutagen>=1.47.0",
+    "click>=8.1.7",
+    "tqdm>=4.66.0",
+    "tomli>=2.0.0; python_version < '3.11'",
+    "tomli-w>=1.0.0",
+]
 
 [project.scripts]
-yotoize = "yotoize.cli:main"
+yotoize = "yotoize.cli:cli"
 
 [build-system]
 requires = ["hatchling"]

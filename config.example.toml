@@ -1,0 +1,84 @@
+# Yotoize Configuration File
+# This file can be used to save common settings for yotoize operations
+# Use with: yotoize audiobook.m4b --config config.toml --split ./chapters
+
+[split]
+# Output format: m4b, m4a, mp3, or wav
+format = "mp3"
+
+# Filename pattern for split files
+# Supported placeholders: {number}, {number:02d}, {title}, {artist}, {album}, {year}
+filename_pattern = "{number:02d} - {title}"
+
+# Preserve metadata from source file
+preserve_metadata = true
+
+# Extract cover art from source file
+extract_cover = false
+
+# Embed cover art in split files
+embed_cover = true
+
+# Path to save/extract cover art (optional)
+# cover_path = "./covers"
+
+# Generate M3U playlist file
+playlist = false
+
+# Name for playlist file (default: album name or "playlist")
+# playlist_name = "My Audiobook"
+
+# Skip chapters that already exist
+skip_existing = false
+
+# Remove silence at chapter boundaries
+remove_silence = false
+
+# Silence detection threshold in dB (default: -50)
+silence_threshold = -50.0
+
+# Minimum silence duration in seconds (default: 0.5)
+silence_duration = 0.5
+
+# Process chapters in parallel
+parallel = false
+
+# Maximum parallel workers (default: 4)
+max_workers = 4
+
+# Chapter filtering options
+[filter]
+# Chapter range to process (e.g., "1,3,5-7" or "1-10")
+# chapters = "1-10"
+
+# Minimum chapter duration in seconds
+# min_duration = 60.0
+
+# Maximum chapter duration in seconds
+# max_duration = 3600.0
+
+# Regex pattern to match chapter titles
+# title_pattern = "Chapter.*"
+
+# Chapter merging (list of ranges to merge)
+# merge = ["1-3", "5-7"]
+
+# Chapter renaming (map chapter numbers to new titles)
+# [rename]
+# 1 = "Introduction"
+# 2 = "Getting Started"
+# 3 = "Advanced Topics"
+
+# Output options
+[output]
+# Show chapter statistics
+statistics = false
+
+# Validate chapters for issues
+validate = false
+
+# Save operation log to file
+# log = "yotoize.log"
+
+# Verbose output
+verbose = false

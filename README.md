@@ -1,507 +1,359 @@
 # Yotoize
 
-Extract and split audiobook chapters from embedded metadata in MP3 and M4B files.
+Extract and split audiobook chapters from embedded metadata in MP3 and M4B/M4A files.
 
-## Installation
+Yotoize reads the chapter markers publishers embed in audiobook files (via `ffprobe`) and
+splits the file into one audio file per chapter (via `ffmpeg`). It does no audio analysis —
+if the file has no embedded chapters, yotoize can't help.
 
-### Prerequisites
+## Requirements
 
-**FFmpeg** (required for audio processing):
+- Python 3.10–3.13 (3.14+ is not supported by the current dependency set)
+- [uv](https://docs.astral.sh/uv/)
+- FFmpeg, including `ffprobe` — both must be on your `PATH`
 
-- **macOS:**
+### Installing FFmpeg
 
-  ```bash
-  brew install ffmpeg
-  ```
+```bash
+# macOS
+brew install ffmpeg
 
-- **Linux (Ubuntu/Debian):**
+# Linux (Ubuntu/Debian)
+sudo apt update && sudo apt install ffmpeg
 
-  ```bash
-  sudo apt update && sudo apt install ffmpeg
-  ```
+# Windows
+choco install ffmpeg    # or download from https://ffmpeg.org/download.html
+```
 
-- **Windows:**
-  Download from [ffmpeg.org](https://ffmpeg.org/download.html) or use Chocolatey:
-
-  ```bash
-  choco install ffmpeg
-  ```
-
-**uv** (Python package manager):
+### Installing uv
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
+# or on macOS: brew install uv
 ```
 
-Or via Homebrew on macOS:
+## Installation
+
+**As a standalone tool** (recommended — puts `yotoize` on your `PATH`):
 
 ```bash
-brew install uv
+git clone https://github.com/mattrasband/yotoize
+cd yotoize
+uv tool install .
 ```
 
-### Install Yotoize
+If uv warns that the tool directory isn't on your `PATH`, run `uv tool update-shell` and
+restart your shell.
+
+**For development / running from a checkout:**
 
 ```bash
-# Install yotoize
-uv pip install -e .
+git clone https://github.com/mattrasband/yotoize
+cd yotoize
+uv sync
+uv run yotoize --version
 ```
+
+With this setup, prefix every command below with `uv run`.
+
+> `uv pip install -e .` only works if a virtualenv already exists and is active. Use
+> `uv sync` (which creates `.venv` for you) or `uv tool install .` instead.
 
 ## Quick Start
 
+**All chapter work goes through the `process` subcommand.** `yotoize <file>` on its own
+will fail with `Error: No such command`.
+
 ```bash
-# Extract chapters and display them
-yotoize audiobook.m4b
+# Show the chapters in a file
+yotoize process audiobook.m4b
 
-# Extract chapters and split into separate files
-yotoize audiobook.m4b --split ./chapters
+# Split into per-chapter files under ./chapters
+yotoize process audiobook.m4b --split ./chapters
 
-# Save chapter data to JSON
-yotoize audiobook.m4b --output chapters.json
+# Split to MP3 instead of the auto-detected format
+yotoize process audiobook.m4b --split ./chapters --format mp3
 
-# Split into MP3 files instead of M4B
-yotoize audiobook.m4b --split ./chapters --format mp3
+# Dump chapter data as JSON
+yotoize process audiobook.m4b --output chapters.json
 ```
+
+The three commands are:
+
+| Command | What it does |
+| --- | --- |
+| `yotoize process <file>` | Inspect / split a single audiobook. This is the main command. |
+| `yotoize config [file]` | Generate or edit a config file. |
+| `yotoize batch ...` | Multi-file processing — **currently broken**, see [Known issues](#known-issues). |
 
 ## How It Works
 
-Yotoize extracts chapter information from embedded metadata in audio files using `ffprobe`. If your audiobook file has chapter markers embedded (which many commercial audiobooks do), it will extract:
+`ffprobe -show_chapters` reads the chapter markers embedded in the file. For each chapter
+yotoize gets a start time, end time, and (usually) a title. When `--split` is given, each
+chapter is re-encoded with `ffmpeg` into its own file, carrying the chapter title as the
+`title` tag.
 
-- Chapter start and end times
-- Chapter titles
-- Chapter durations
-
-Then, if requested, it splits the audio file into separate chapter files using `ffmpeg`, preserving:
-
-- Original audio quality and channel layout (stereo, 5.1, etc.)
-- Chapter titles as file metadata
-- Sequential numbering for easy sorting
+Note that splitting **re-encodes** rather than stream-copies (default 192k AAC for
+m4b/m4a, 192k libmp3lame for mp3, pcm_s16le for wav). Use `--bitrate` / `--codec` to
+change that.
 
 ## Usage
 
-### Basic Usage
-
-```bash
-yotoize <audio_file>
+```
+yotoize process [OPTIONS] AUDIO_FILE
 ```
 
-Displays detected chapters with their start times, end times, durations, and titles.
+With no other options, this prints a table of the detected chapters and exits.
 
-### Main Options
+### File operations
 
-#### File Operations
-- `--output, -o`: Save chapter data to a JSON file
-- `--split, -s`: Split audio into chapter files in the specified directory. **Automatically creates a subfolder** named after the input file (with extension and common patterns removed)
-- `--format, -f`: Output format for split files (`m4b`, `m4a`, `mp3`, or `wav`). Default: auto-detect based on input
-- `--dry-run`: Preview what would happen without actually splitting
-- `--skip-existing`: Skip chapters that already exist in output directory
+| Option | Description |
+| --- | --- |
+| `--output`, `-o PATH` | Write chapter data to a JSON file |
+| `--split`, `-s DIR` | Split into chapter files. **Creates a subfolder** inside `DIR` named after the input file (see [Split output](#split-output)) |
+| `--format`, `-f` | `m4b`, `m4a`, `mp3`, or `wav`. Default: derived from the input file (`.m4b`/`.m4a` → `m4b`, everything else → `mp3`) |
+| `--dry-run` | Print the files that would be created without writing anything |
+| `--skip-existing` | Skip chapters whose output file already exists |
 
-#### Chapter Selection & Filtering
-- `--chapters`: Chapter range to process (e.g., `"1,3,5-7"` or `"1-10"`)
-- `--min-duration`: Minimum chapter duration in seconds
-- `--max-duration`: Maximum chapter duration in seconds
-- `--title-pattern`: Regex pattern to match chapter titles
-- `--select-interactive, -i`: Interactive chapter selection mode
-- `--merge`: Merge chapters (e.g., `--merge "1-3" --merge "5-7"`)
+### Chapter selection & filtering
 
-#### Chapter Editing
-- `--rename`: Rename chapters (format: `"number:new title"`, e.g., `--rename "1:Introduction"`)
-- `--rename-interactive`: Interactive chapter renaming mode
+| Option | Description |
+| --- | --- |
+| `--chapters RANGE` | Chapters to process, 1-based (`"1,3,5-7"` or `"1-10"`) |
+| `--min-duration SECS` | Drop chapters shorter than this |
+| `--max-duration SECS` | Drop chapters longer than this |
+| `--title-pattern REGEX` | Keep only chapters whose title matches (case-insensitive search) |
+| `--select-interactive`, `-i` | Prompt for a chapter selection before processing |
+| `--merge RANGE` | Merge a range into one file; repeatable (`--merge "1-3" --merge "5-7"`). The merged title becomes `"<first title> - <last title>"` |
 
-#### Metadata & Cover Art
-- `--preserve-metadata`: Preserve metadata (artist, album, year, genre) in split files
-- `--extract-cover`: Extract cover art from source file
-- `--embed-cover`: Embed cover art in split files
-- `--cover-path`: Path to save/extract cover art
+Filters are applied in order: `--merge` first, then the filters above, then renames.
 
-#### Audio Quality
-- `--bitrate`: Audio bitrate (e.g., `"192k"`, `"256k"`)
-- `--codec`: Audio codec (e.g., `"aac"`, `"libmp3lame"`)
+### Chapter renaming
 
-#### Filename Customization
-- `--filename-pattern`: Custom filename pattern (default: `"{number:02d} - {title}"`)
-  
-  Supported placeholders:
-  - `{number}` - Chapter number (1-based)
-  - `{number:02d}` - Chapter number with zero-padding
-  - `{title}` - Chapter title
-  - `{artist}` - Artist from metadata
-  - `{album}` - Album from metadata
-  - `{year}` - Year from metadata
+| Option | Description |
+| --- | --- |
+| `--rename "N:Title"` | Rename chapter N; repeatable. Numbering is 1-based and applies *after* merging and filtering |
+| `--rename-interactive` | Prompt for renames one at a time |
 
-#### Advanced Features
-- `--remove-silence`: Remove silence at chapter boundaries
-- `--silence-threshold`: Silence threshold in dB (default: -50)
-- `--silence-duration`: Minimum silence duration in seconds (default: 0.5)
-- `--playlist`: Generate M3U playlist file
-- `--playlist-name`: Name for playlist file
-- `--statistics`: Show chapter statistics
-- `--validate`: Validate chapters for issues (overlaps, gaps, etc.)
-- `--parallel`: Process chapters in parallel for faster splitting
-- `--max-workers`: Maximum parallel workers (default: 4)
-- `--log`: Save operation log to file
-- `--config`: Load configuration from TOML or JSON file
-- `--verbose, -v`: Show detailed error messages and tracebacks
+### Metadata & cover art
 
-### Batch Processing
+| Option | Description |
+| --- | --- |
+| `--preserve-metadata` | Copy artist/album/year/genre/track/comment onto the split files |
+| `--extract-cover` | Pull cover art out of the source file |
+| `--embed-cover` | Embed the cover art into the split files (implies extraction) |
+| `--cover-path PATH` | Where to write the extracted cover. Defaults to `cover.jpg` in the output folder when `--split` is used, otherwise next to the input file |
 
-Process multiple files at once:
+`--preserve-metadata` is also what makes the `{artist}`, `{album}`, `{year}`, and `{genre}`
+filename placeholders resolve, and what populates the `metadata` object in `--output` JSON.
+Without one of `--preserve-metadata`, `--extract-cover`, or `--embed-cover`, no metadata is
+read at all and those placeholders expand to empty strings.
 
-```bash
-# Process multiple files
-yotoize batch file1.m4b file2.m4b file3.m4b --output-dir ./output
+### Audio quality
 
-# Process all files in a directory
-yotoize batch --batch-dir ./audiobooks --output-dir ./output --format mp3
+| Option | Description |
+| --- | --- |
+| `--bitrate` | e.g. `"192k"`, `"256k"`. Default 192k; ignored for `wav` |
+| `--codec` | e.g. `"aac"`, `"libmp3lame"`, `"pcm_s16le"` |
 
-# With additional options
-yotoize batch --batch-dir ./audiobooks --output-dir ./output --preserve-metadata --playlist --parallel
-```
+### Filename pattern
+
+`--filename-pattern` (default `"{number:02d} - {title}"`) supports:
+
+- `{number}` — chapter number, 1-based
+- `{number:0Nd}` — zero-padded chapter number (`{number:02d}` → `01`, `02`, …)
+- `{title}` — chapter title, falling back to `Chapter N`
+- `{artist}`, `{album}`, `{year}`, `{genre}` — from file metadata (requires `--preserve-metadata`)
+
+Characters illegal in filenames (`<>:"/\|?*`) are replaced with `_`, and titles are
+truncated at 200 characters.
+
+### Advanced
+
+| Option | Description |
+| --- | --- |
+| `--remove-silence` | Trim silence at chapter boundaries |
+| `--silence-threshold DB` | Silence threshold in dB (default `-50`) |
+| `--silence-duration SECS` | Minimum silence run to detect (default `0.5`) |
+| `--playlist` | Write an M3U playlist alongside the split files (requires `--split`) |
+| `--playlist-name NAME` | Playlist filename without extension. Default: the album name, else `playlist` |
+| `--statistics` | Print chapter count and shortest/longest/average durations |
+| `--validate` | Warn about overlapping chapters, gaps > 1s, and missing end times |
+| `--parallel` | Split chapters concurrently |
+| `--max-workers N` | Worker count for `--parallel` (default `4`) |
+| `--log PATH` | Write a timestamped operation log |
+| `--config PATH` | Load a config file (must exist) |
+| `--verbose`, `-v` | Show tracebacks and per-chapter progress instead of a progress bar |
 
 ### Examples
 
 ```bash
-# Extract and display chapters
-yotoize audiobook.m4b
+# Inspect
+yotoize process audiobook.m4b
+yotoize process audiobook.m4b --statistics --validate
 
-# Extract chapters and save metadata to JSON
-yotoize audiobook.m4b --output chapters.json
+# Split with metadata and cover art
+yotoize process audiobook.m4b --split ./out --preserve-metadata --embed-cover
 
-# Split into M4A files
-yotoize audiobook.m4b --split ./chapters --format m4a
+# Only chapters 1-5 and 10-15, as MP3, three digits of padding
+yotoize process audiobook.m4b --split ./out --chapters "1-5,10-15" \
+  --format mp3 --filename-pattern "{number:03d} - {title}"
 
-# Split into MP3 files with verbose output
-yotoize audiobook.m4b --split ./chapters --format mp3 --verbose
+# Merge the front matter into one file and rename it
+yotoize process audiobook.m4b --split ./out --merge "1-3" --rename "1:Front Matter"
 
-# Note: Creates subfolder automatically
-# Input: "Harry Potter (Full-Cast Edition).m4b"
-# Output: ./chapters/Harry Potter/00 - Chapter 1.mp3
+# Preview first, then run it for real in parallel
+yotoize process audiobook.m4b --split ./out --dry-run
+yotoize process audiobook.m4b --split ./out --parallel --max-workers 8
 
-# Split with custom filename pattern
-yotoize audiobook.m4b --split ./chapters --filename-pattern "{number:03d} - {title}"
-
-# Split only chapters 1-5 and 10-15
-yotoize audiobook.m4b --split ./chapters --chapters "1-5,10-15"
-
-# Split with metadata preservation and cover art
-yotoize audiobook.m4b --split ./chapters --preserve-metadata --embed-cover
-
-# Split with silence removal
-yotoize audiobook.m4b --split ./chapters --remove-silence
-
-# Generate playlist
-yotoize audiobook.m4b --split ./chapters --playlist --playlist-name "My Audiobook"
-
-# Show statistics
-yotoize audiobook.m4b --statistics
-
-# Validate chapters
-yotoize audiobook.m4b --validate
-
-# Interactive chapter selection
-yotoize audiobook.m4b --split ./chapters --select-interactive
-
-# Rename chapters
-yotoize audiobook.m4b --split ./chapters --rename "1:Introduction" --rename "2:Getting Started"
-
-# Merge chapters 1-3 into a single file
-yotoize audiobook.m4b --split ./chapters --merge "1-3"
-
-# Process with config file
-yotoize audiobook.m4b --config myconfig.toml --split ./chapters
-
-# Generate a default config file first
-yotoize config myconfig.toml
-# Then edit it and use it
-yotoize audiobook.m4b --config myconfig.toml --split ./chapters
-
-# Dry run to preview
-yotoize audiobook.m4b --split ./chapters --dry-run
-
-# Parallel processing for faster splitting
-yotoize audiobook.m4b --split ./chapters --parallel --max-workers 8
+# Playlist + log
+yotoize process audiobook.m4b --split ./out --playlist --playlist-name "My Audiobook" --log run.log
 ```
 
-## Configuration Files
+## Output
 
-Yotoize supports configuration files in TOML or JSON format. This allows you to save common settings and reuse them across operations.
-
-### Example TOML Config (`config.toml`)
-
-```toml
-[split]
-format = "mp3"
-filename_pattern = "{number:02d} - {title}"
-preserve_metadata = true
-embed_cover = true
-playlist = true
-skip_existing = false
-remove_silence = false
-parallel = false
-max_workers = 4
-
-[filter]
-# chapters = "1-10"
-# min_duration = 60.0
-# max_duration = 3600.0
-# title_pattern = "Chapter.*"
-# merge = ["1-3", "5-7"]
-
-[rename]
-# 1 = "Introduction"
-# 2 = "Getting Started"
-
-[output]
-statistics = false
-validate = false
-verbose = false
-```
-
-### Example JSON Config (`config.json`)
-
-```json
-{
-  "split": {
-    "format": "mp3",
-    "filename_pattern": "{number:02d} - {title}",
-    "preserve_metadata": true,
-    "embed_cover": true,
-    "playlist": true
-  },
-  "filter": {
-    "chapters": "1-10",
-    "min_duration": 60.0
-  },
-  "output": {
-    "statistics": true,
-    "validate": true
-  }
-}
-```
-
-### Using Config Files
-
-Yotoize automatically searches for config files in standard locations if `--config` is not provided:
-
-**Search order:**
-1. Current directory: `yotoize.toml`, `.yotoize.toml`
-2. User config directory:
-   - **Linux**: `~/.config/yotoize/config.toml` or `~/.config/yotoize/yotoize.toml`
-   - **macOS**: `~/Library/Application Support/yotoize/config.toml` or `~/Library/Application Support/yotoize/yotoize.toml`
-   - **Windows**: `%APPDATA%\yotoize\config.toml` or `%APPDATA%\yotoize\yotoize.toml`
-
-```bash
-# Generate a default config file
-yotoize config                    # Creates yotoize.toml in current directory
-yotoize config --user             # Creates config.toml in user config directory
-yotoize config myconfig.toml     # Creates myconfig.toml
-yotoize config config.json --format json  # Creates config.json
-
-# Open config file in editor ($EDITOR must be set)
-yotoize config --editor           # Opens existing config file (searches standard locations)
-yotoize config --user --editor    # Creates and opens config.toml in user config directory
-yotoize config --editor myconfig.toml  # Opens myconfig.toml
-
-# Config file will be automatically found if placed in standard location
-# No need to specify --config if using yotoize.toml in current directory
-yotoize audiobook.m4b --split ./chapters
-
-# Or explicitly specify config file
-yotoize audiobook.m4b --config config.toml --split ./chapters
-
-# Config values override defaults but can be overridden by command-line options
-yotoize audiobook.m4b --config config.toml --split ./chapters --format m4b
-```
-
-### Config File Structure
-
-The config file uses dot notation for nested keys:
-
-- `split.format` - Output format
-- `split.filename_pattern` - Filename pattern
-- `split.preserve_metadata` - Preserve metadata (boolean)
-- `split.embed_cover` - Embed cover art (boolean)
-- `split.playlist` - Generate playlist (boolean)
-- `split.skip_existing` - Skip existing files (boolean)
-- `split.remove_silence` - Remove silence (boolean)
-- `split.parallel` - Parallel processing (boolean)
-- `split.max_workers` - Max parallel workers (integer)
-- `filter.chapters` - Chapter range string
-- `filter.min_duration` - Minimum duration (float)
-- `filter.max_duration` - Maximum duration (float)
-- `filter.title_pattern` - Title regex pattern
-- `filter.merge` - List of merge ranges
-- `rename.<number>` - Chapter rename mapping
-- `output.statistics` - Show statistics (boolean)
-- `output.validate` - Validate chapters (boolean)
-- `output.verbose` - Verbose output (boolean)
-
-See `config.example.toml` and `config.example.json` in the repository for complete examples.
-
-## Output Format
-
-### Console Output
-
-When chapters are detected, they're displayed in a table:
+### Console
 
 ```
-Found 19 chapters:
+Found 3 chapters:
 
-Chapter     Start        End          Duration     Title
+Chapter    Start        End          Duration     Title
 ----------------------------------------------------------------------------------------------------
-1            00:00:00     00:01:04     00:01:04     Opening Credits
-2            00:01:04     00:33:50     00:32:46     Chapter 1 - The Boy Who Lived
-3            00:33:50     00:59:18     00:25:28     Chapter 2 - The Vanishing Glass
-...
+1          00:00:00     00:00:10     00:00:10     Opening Credits
+2          00:00:10     00:00:20     00:00:10     Chapter One
+3          00:00:20     00:00:30     00:00:10     Chapter Two
 ```
 
-### JSON Output
-
-When using `--output`, the JSON file contains:
+### JSON (`--output`)
 
 ```json
 {
-  "audio_file": "path/to/audiobook.m4b",
-  "duration": 31287.582,
+  "audio_file": "Test Book (Unabridged).m4b",
+  "duration": 30.023219954648525,
   "metadata": {
-    "title": "Book Title",
-    "artist": "Author Name",
-    "album": "Book Title",
-    "year": "2023"
+    "title": "Test Book",
+    "artist": "Test Author",
+    "album": "Test Book"
   },
   "chapters": [
     {
       "number": 1,
       "start_time": 0.0,
-      "end_time": 63.531,
-      "duration": 63.531,
+      "end_time": 10.0,
+      "duration": 10.0,
       "confidence": 1.0,
       "title": "Opening Credits"
-    },
-    {
-      "number": 2,
-      "start_time": 63.531,
-      "end_time": 1970.531,
-      "duration": 1907.0,
-      "confidence": 1.0,
-      "title": "Chapter 1 - The Boy Who Lived"
     }
   ]
 }
 ```
 
-### Split Files
+`metadata` is `{}` unless `--preserve-metadata` (or a cover flag) is passed. `confidence`
+is always `1.0` — chapters come from metadata, so there is nothing to estimate.
 
-When using `--split`, yotoize automatically creates a subfolder in the specified directory, named after the input file. The folder name is cleaned up by:
+### Split output
 
-- Removing the file extension (`.m4b`, `.mp3`, etc.)
-- Removing common patterns like "(Full-Cast Edition)", "(Unabridged)", "(Narrated by...)", etc.
-- Cleaning up extra whitespace
+`--split DIR` writes into a subfolder of `DIR` named after the input file, with the
+extension and common edition suffixes stripped — `(Full-Cast Edition)`, `(Unabridged)`,
+`(Abridged)`, `(Narrated by …)`, `(Read by …)`, `(Audible …)`, `(… Edition)`, and trailing
+`- Unabridged` / `- Full Cast`.
 
-**Example:**
-- Input file: `Harry Potter and the Sorcerer's Stone (Full-Cast Edition).m4b`
-- Output directory specified: `./output`
-- Created folder: `./output/Harry Potter and the Sorcerer's Stone/`
-- Chapter files: `./output/Harry Potter and the Sorcerer's Stone/00 - Opening Credits.mp3`, etc.
+```
+Input:  Harry Potter and the Sorcerer's Stone (Full-Cast Edition).m4b
+Run:    yotoize process "…(Full-Cast Edition).m4b" --split ./out --format mp3
 
-Files are named sequentially with zero-padding:
+./out/Harry Potter and the Sorcerer's Stone/
+├── 01 - Opening Credits.mp3
+├── 02 - Chapter 1 - The Boy Who Lived.mp3
+├── 03 - Chapter 2 - The Vanishing Glass.mp3
+└── …
+```
 
-- `00 - Opening Credits.m4b`
-- `01 - Chapter 1 - The Boy Who Lived.m4b`
-- `02 - Chapter 2 - The Vanishing Glass.m4b`
-- ...
+Numbering starts at `01`.
 
-Each file includes:
-
-- Title metadata matching the filename
-- Original audio quality and channel layout preserved
-- Proper sequential numbering for file browser sorting
-- Additional metadata (artist, album, etc.) if `--preserve-metadata` is used
-- Cover art if `--embed-cover` is used
-
-### Playlist Files
-
-When using `--playlist`, an M3U playlist file is generated:
+### Playlist (`--playlist`)
 
 ```
 #EXTM3U
-#EXTINF:63,Opening Credits
-00 - Opening Credits.mp3
-#EXTINF:1907,Chapter 1 - The Boy Who Lived
-01 - Chapter 1 - The Boy Who Lived.mp3
-...
+#EXTINF:10,Opening Credits
+01 - Opening Credits.mp3
+#EXTINF:10,Chapter One
+02 - Chapter One.mp3
 ```
 
-## Requirements
+## Configuration files
 
-- Python 3.10 to 3.13 (Python 3.14+ not yet supported by dependencies)
-- uv (for dependency management)
-- FFmpeg and FFprobe (required for audio processing)
+> **Only four settings are read from config files today:** `split.format`,
+> `split.filename_pattern`, `split.bitrate`, and `split.codec`. Every other key —
+> including the booleans in the generated default config and everything under
+> `[filter]`, `[rename]`, and `[output]` — is parsed but **silently ignored**. Pass those
+> as command-line flags. See [Known issues](#known-issues).
 
-### Installing FFmpeg
-
-**macOS:**
+### Generating one
 
 ```bash
-brew install ffmpeg
+yotoize config                            # ./yotoize.toml
+yotoize config --user                     # config.toml in the user config dir
+yotoize config myconfig.toml              # a specific path
+yotoize config config.json --format json  # JSON instead of TOML
+yotoize config --force                    # overwrite an existing file
+yotoize config --editor                   # open the found config in $EDITOR
 ```
 
-**Linux (Ubuntu/Debian):**
+### Where it's looked up
 
-```bash
-sudo apt update && sudo apt install ffmpeg
+If `--config` isn't given, yotoize searches, in order, and uses the first hit:
+
+1. `./yotoize.toml`, `./.yotoize.toml`, `./yotoize.json`, `./.yotoize.json`
+2. In the user config directory: `config.toml`, `yotoize.toml`, `config.json`, `yotoize.json`
+
+The user config directory is:
+
+- **macOS:** `~/Library/Application Support/yotoize/`
+- **Linux:** `$XDG_CONFIG_HOME/yotoize/`, else `~/.config/yotoize/`
+- **Windows:** `%APPDATA%\yotoize\`
+
+The path in use is echoed to stderr on every run. Command-line flags always win over
+config values.
+
+### What actually takes effect
+
+```toml
+[split]
+format = "mp3"                              # applied
+filename_pattern = "{number:02d} - {title}" # applied
+bitrate = "192k"                            # applied
+codec = "libmp3lame"                        # applied
 ```
 
-**Windows:**
-Download from [ffmpeg.org](https://ffmpeg.org/download.html) or use Chocolatey:
+`config.example.toml` and `config.example.json` in the repo show the full intended schema,
+but treat everything outside those four keys as aspirational for now.
 
-```bash
-choco install ffmpeg
-```
+## Known issues
 
-## Features
+- **`yotoize batch` crashes.** It calls the processing function without the `rename_map`
+  and `rename_interactive` arguments and dies with
+  `TypeError: process_single_file() missing 2 required positional arguments`. Loop over
+  `yotoize process` in a shell instead:
 
-### Core Features
-- ✅ Extract chapters from embedded metadata
-- ✅ Split audio into separate chapter files
-- ✅ Preserve audio quality and channel layout
-- ✅ Support for MP3, M4B, M4A, and WAV formats
+  ```bash
+  for f in ./audiobooks/*.m4b; do
+    yotoize process "$f" --split ./out --format mp3 --preserve-metadata --skip-existing
+  done
+  ```
 
-### Advanced Features
-- ✅ **Batch Processing** - Process multiple files at once
-- ✅ **Enhanced Metadata** - Preserve artist, album, year, genre
-- ✅ **Cover Art** - Extract and embed cover art
-- ✅ **Progress Bars** - Visual progress indicators
-- ✅ **Resume/Skip** - Skip existing files
-- ✅ **Custom Filenames** - Flexible filename patterns
-- ✅ **Dry Run** - Preview operations
-- ✅ **Chapter Filtering** - Select chapters by number, duration, or title pattern
-- ✅ **Audio Quality** - Control bitrate and codec
-- ✅ **Playlist Generation** - Create M3U playlists
-- ✅ **Statistics** - Chapter statistics and analysis
-- ✅ **Validation** - Detect overlaps, gaps, and issues
-- ✅ **Config Files** - Save and reuse settings
-- ✅ **Chapter Merging** - Combine multiple chapters
-- ✅ **Silence Removal** - Remove silence at boundaries
-- ✅ **Interactive Selection** - Select chapters interactively
-- ✅ **Chapter Renaming** - Rename chapters before splitting
-- ✅ **Logging** - Save operation logs
-- ✅ **Format Detection** - Auto-detect best output format
-- ✅ **Parallel Processing** - Faster splitting with multiple workers
+- **Most config keys are ignored** — see the note in [Configuration files](#configuration-files).
+- **Bare `yotoize <file>` doesn't work** despite the group being set up to try; use
+  `yotoize process <file>`. A few of the tool's own hint messages still print the bare form.
+- **Splitting always re-encodes**, so you lose a generation of quality even when the
+  output format matches the input.
 
 ## Limitations
 
-- **Requires embedded chapter metadata**: This tool only works with audio files that have chapter markers embedded in their metadata. If your audiobook doesn't have embedded chapters, this tool won't be able to detect them.
-- **No AI detection**: Unlike some other tools, this doesn't use AI to detect chapters from audio content. It relies solely on metadata.
-
-## Why This Approach?
-
-Many commercial audiobooks (especially from Audible, Apple Books, etc.) include chapter markers in their metadata. Extracting from metadata is:
-
-- **Fast**: No audio processing needed
-- **Accurate**: Uses the publisher's chapter markers
-- **Reliable**: No guessing or approximation
-
-If your audiobook doesn't have embedded chapters, you'll need a different tool that uses audio analysis or AI detection.
+- **Requires embedded chapter metadata.** Files without chapter markers produce
+  `No chapters found in file metadata.` and a non-zero exit.
+- **No audio analysis or AI detection.** Chapter boundaries come only from the publisher's
+  markers, which makes this fast and exact — but useless on unmarked files.
 
 ## License
 

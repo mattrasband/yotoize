@@ -74,6 +74,9 @@ def extract_chapters(audio_path: str) -> List[Chapter]:
         
         return chapters
         
-    except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
-        # ffprobe failed or no chapters found
-        return []
+    except FileNotFoundError as exc:
+        raise RuntimeError('ffprobe is required; install FFmpeg and add it to PATH') from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f'ffprobe failed: {exc.stderr.strip()}') from exc
+    except (json.JSONDecodeError, KeyError, ValueError) as exc:
+        raise ValueError(f'Invalid chapter metadata: {exc}') from exc

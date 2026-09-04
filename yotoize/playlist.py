@@ -34,7 +34,9 @@ def generate_m3u_playlist(
         else:
             playlist_name = 'playlist'
     
-    playlist_path = output_dir / f"{playlist_name}.m3u"
+    import re
+    playlist_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', playlist_name).strip(' .') or 'playlist'
+    playlist_path = output_dir / f"{playlist_name[:200]}.m3u"
     
     lines = ['#EXTM3U']
     

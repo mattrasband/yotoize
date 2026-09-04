@@ -1,6 +1,6 @@
 # Yotoize Configuration File
 # This file can be used to save common settings for yotoize operations
-# Use with: yotoize audiobook.m4b --config config.toml --split ./chapters
+# Use with: yotoize process audiobook.m4b --config config.toml --split ./chapters
 
 [split]
 # Output format: m4b, m4a, mp3, or wav

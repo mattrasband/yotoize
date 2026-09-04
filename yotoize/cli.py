@@ -6,6 +6,8 @@ import click
 import json
 import re
 import subprocess
+import math
+import tempfile
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -24,6 +26,83 @@ from .utils import (
 )
 from .playlist import generate_m3u_playlist
 from .logger import YotoizeLogger
+from . import __version__
+
+
+class ConfiguredCommand(click.Command):
+    """Resolve config defaults before invoking the processing callback."""
+
+    def invoke(self, ctx):
+        path = ctx.params.get('config') or find_config_file()
+        if path:
+            try:
+                config = Config(Path(path))
+                sections = {'split': {
+                    'format', 'filename_pattern', 'bitrate', 'codec', 'preserve_metadata',
+                    'extract_cover', 'embed_cover', 'cover_path', 'playlist', 'playlist_name',
+                    'skip_existing', 'remove_silence', 'silence_threshold', 'silence_duration',
+                    'parallel', 'max_workers'},
+                    'filter': {'chapters', 'min_duration', 'max_duration', 'title_pattern', 'merge'},
+                    'output': {'statistics', 'validate', 'log', 'verbose'}}
+                defaults = {}
+                if not isinstance(config.data, dict):
+                    raise ValueError('Config must be an object')
+                for section, values in config.data.items():
+                    if section == 'rename':
+                        if not isinstance(values, dict):
+                            raise ValueError('rename must be a table')
+                        defaults['rename'] = [f'{number}:{title}' for number, title in values.items()]
+                        continue
+                    if section not in sections or not isinstance(values, dict):
+                        raise ValueError(f'Unknown or invalid config section: {section}')
+                    for key, value in values.items():
+                        if key not in sections[section]:
+                            raise ValueError(f'Unknown config key: {section}.{key}')
+                        defaults[key] = value
+                for param in self.params:
+                    if param.name in defaults:
+                        value = param.process_value(ctx, defaults[param.name])
+                        if ctx.get_parameter_source(param.name) == click.core.ParameterSource.DEFAULT:
+                            ctx.params[param.name] = value
+                click.echo(f'Using config file: {Path(path).resolve()}', err=True)
+            except (ValueError, TypeError, OSError) as exc:
+                raise click.ClickException(f'Invalid configuration: {exc}') from exc
+        return super().invoke(ctx)
+
+
+def chapter_output_paths(chapters, output_dir, output_format, pattern, metadata):
+    paths = []
+    seen = set()
+    for number, chapter in enumerate(chapters, 1):
+        if (chapter.end_time is None or not math.isfinite(chapter.start_time)
+                or not math.isfinite(chapter.end_time) or chapter.start_time < 0
+                or chapter.end_time <= chapter.start_time):
+            raise ValueError(f'Chapter {number} has invalid boundaries')
+        name = format_filename(pattern, chapter, number, len(chapters), metadata)
+        if not name or Path(name).name != name or '/' in name or '\\' in name:
+            raise ValueError(f'Invalid output filename: {name!r}')
+        key = name.casefold()
+        if key in seen:
+            raise ValueError(f'Duplicate output filename: {name}. Include {{number}} in the pattern.')
+        seen.add(key)
+        paths.append(output_dir / f'{name}.{output_format}')
+    return paths
+
+
+def valid_audio_output(path, expected_duration):
+    """Check the audio stream and duration before publishing or resuming."""
+    try:
+        result = subprocess.run([
+            'ffprobe', '-v', 'error', '-select_streams', 'a:0',
+            '-show_entries', 'stream=duration:format=duration', '-of', 'json', str(path)
+        ], capture_output=True, text=True, check=True)
+        data = json.loads(result.stdout)
+        if not data.get('streams'):
+            return False
+        duration = float(data['streams'][0].get('duration', data.get('format', {}).get('duration', 0)))
+        return math.isfinite(duration) and duration > 0 and abs(duration - expected_duration) <= 0.25
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError):
+        return False
 
 
 def format_time(seconds: float) -> str:
@@ -175,7 +254,6 @@ def process_single_file(
     statistics: bool,
     validate: bool,
     log_file: Optional[Path],
-    config: Optional[Config],
     parallel: bool,
     max_workers: int,
 ) -> bool:
@@ -184,40 +262,10 @@ def process_single_file(
     Returns:
         True if successful, False otherwise
     """
-    logger = YotoizeLogger(log_file, verbose)
+    logger = YotoizeLogger(None if dry_run else log_file, verbose)
     
     try:
-        # Priority: 1. CLI arguments (already set), 2. Config file, 3. Auto-detect/defaults
-        # Only apply config values if CLI arguments are not provided
-        
-        # Format: CLI > Config > Auto-detect (only if config doesn't have format)
-        if output_format is None:
-            if config:
-                config_format = config.get('split.format')
-                if config_format:
-                    output_format = config_format
-            
-            # Only auto-detect if config didn't provide a format
-            if output_format is None:
-                output_format = detect_output_format(audio_path)
-        
-        # Filename pattern: CLI > Config > Default
-        if (not filename_pattern or filename_pattern == "{number:02d} - {title}") and config:
-            config_pattern = config.get('split.filename_pattern')
-            if config_pattern:
-                filename_pattern = config_pattern
-        
-        # Bitrate: CLI > Config
-        if bitrate is None and config:
-            bitrate = config.get('split.bitrate')
-        
-        # Codec: CLI > Config
-        if codec is None and config:
-            codec = config.get('split.codec')
-        
-        # Ensure output_format is set (fallback to mp3)
-        if not output_format:
-            output_format = 'mp3'
+        output_format = output_format or detect_output_format(audio_path)
         
         # Validate audio file
         try:
@@ -245,19 +293,6 @@ def process_single_file(
         if split:
             base_output_dir = Path(split)
             output_dir = derive_output_folder_name(audio_path, base_output_dir)
-        
-        # Extract cover art if requested
-        if extract_cover or embed_cover:
-            extractor = MetadataExtractor(str(audio_path))
-            if cover_path:
-                cover_output = Path(cover_path)
-            elif output_dir:
-                cover_output = output_dir / 'cover.jpg'
-            else:
-                cover_output = audio_path.parent / 'cover.jpg'
-            cover_art_path = extractor.extract_cover_art(cover_output)
-            if cover_art_path:
-                logger.info(f"Extracted cover art: {cover_art_path}")
         
         # Extract chapters
         try:
@@ -292,6 +327,8 @@ def process_single_file(
         )
         if len(chapters) < original_count:
             logger.info(f"Filtered to {len(chapters)} chapters (from {original_count})")
+        if not chapters:
+            raise ValueError('No chapters match the selection')
         
         # Handle chapter renaming
         rename_map_local = rename_map or {}
@@ -344,8 +381,25 @@ def process_single_file(
                 duration_str = format_time(chapter.duration) if chapter.duration else "N/A"
                 print(f"{i:<10} {start_str:<12} {end_str:<12} {duration_str:<12}")
         
+        if split:
+            chapter_output_paths(chapters, output_dir, output_format, filename_pattern, metadata)
+        cover_output = None
+        if extract_cover or embed_cover:
+            cover_output = Path(cover_path) if cover_path else (output_dir or audio_path.parent) / 'cover.jpg'
+            if not dry_run:
+                cover_output.parent.mkdir(parents=True, exist_ok=True)
+                cover_art_path = MetadataExtractor(str(audio_path)).extract_cover_art(cover_output)
+                if cover_art_path:
+                    logger.info(f'Extracted cover art: {cover_art_path}')
+                else:
+                    logger.warning('No cover art found in source file.')
+        if dry_run:
+            for label, target in [('JSON', output), ('cover', cover_output), ('log', log_file)]:
+                if target:
+                    logger.info(f'DRY RUN: Would write {label}: {target}')
+
         # Save to JSON if requested
-        if output:
+        if output and not dry_run:
             output_path = Path(output)
             chapter_data = {
                 'audio_file': str(audio_path),
@@ -382,6 +436,8 @@ def process_single_file(
                 for i, chapter in enumerate(chapters, 1):
                     filename = format_filename(filename_pattern, chapter, i, len(chapters), metadata)
                     print(f"  Would create: {output_dir / f'{filename}.{output_format}'}")
+                if playlist:
+                    logger.info('DRY RUN: Would generate a playlist in the output directory')
             else:
                 success = split_audio_by_chapters(
                     audio_path=audio_path,
@@ -403,7 +459,9 @@ def process_single_file(
                     logger=logger,
                 )
                 
-                if success and playlist:
+                if not success:
+                    return False
+                if playlist:
                     playlist_path = generate_m3u_playlist(
                         chapters, output_dir, output_format, filename_pattern, metadata, playlist_name
                     )
@@ -439,6 +497,7 @@ def split_audio_by_chapters(
 ) -> bool:
     """Split audio file into separate chapter files."""
     
+    output_files = chapter_output_paths(chapters, output_dir, output_format, filename_pattern, metadata)
     output_dir.mkdir(parents=True, exist_ok=True)
     
     logger.info(f"Splitting audio into {len(chapters)} chapter files...")
@@ -476,12 +535,7 @@ def split_audio_by_chapters(
         duration = end_time - start_time
         
         # Format filename
-        filename = format_filename(filename_pattern, chapter, i + 1, len(chapters), metadata)
-        output_file = output_dir / f"{filename}.{output_format}"
-        
-        # Skip if exists
-        if skip_existing and output_file.exists():
-            return (i, True, "Skipped (exists)")
+        output_file = output_files[i]
         
         # Detect silence if requested
         trim_start = 0.0
@@ -497,16 +551,27 @@ def split_audio_by_chapters(
         actual_start = start_time + trim_start
         actual_end = end_time - trim_end
         actual_duration = actual_end - actual_start
+        if actual_duration <= 0:
+            return (i, False, 'Silence trimming removed the entire chapter')
+        if skip_existing and output_file.exists():
+            if valid_audio_output(output_file, actual_duration):
+                return (i, True, 'Skipped (verified)')
+            return (i, False, f'Existing output is incomplete or invalid: {output_file}; remove it or rerun without --skip-existing')
         
         # Build ffmpeg command
         cmd = [
             'ffmpeg',
+            '-hide_banner', '-loglevel', 'error', '-nostdin',
             '-ss', str(actual_start),
             '-i', str(audio_path),
-            '-map', '0:a',
+        ]
+        if cover_art_path and output_format in ['mp3', 'm4a', 'm4b']:
+            cmd.extend(['-i', str(cover_art_path)])
+        cmd.extend([
+            '-map', '0:a:0', '-map_chapters', '-1',
             '-t', str(actual_duration),
             '-avoid_negative_ts', 'make_zero',
-        ]
+        ])
         
         # Add codec
         cmd.extend(['-c:a', default_codec])
@@ -525,26 +590,27 @@ def split_audio_by_chapters(
         # Add cover art if provided
         if cover_art_path and cover_art_path.exists():
             if output_format in ['m4b', 'm4a']:
-                cmd.extend(['-i', str(cover_art_path), '-map', '1', '-c:v', 'copy', '-disposition:v', '0'])
+                cmd.extend(['-map', '1:v:0', '-c:v', 'copy', '-disposition:v', 'attached_pic'])
             elif output_format == 'mp3':
-                cmd.extend(['-i', str(cover_art_path), '-map', '0:a', '-map', '1', '-c:v', 'copy', '-id3v2_version', '3'])
-        
-        cmd.extend(['-y', str(output_file)])
+                cmd.extend(['-map', '1:v:0', '-c:v', 'copy', '-disposition:v', 'attached_pic', '-id3v2_version', '3'])
         
         try:
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=True,
-                text=True
-            )
+            with tempfile.TemporaryDirectory(prefix='.yotoize-', dir=output_dir) as temp_dir:
+                temp_file = Path(temp_dir) / output_file.name
+                cmd.extend(['-y', str(temp_file)])
+                subprocess.run(cmd, capture_output=True, check=True, text=True)
+                if not valid_audio_output(temp_file, actual_duration):
+                    return (i, False, 'Encoded output failed duration/audio validation')
+                temp_file.replace(output_file)
             return (i, True, None)
         except subprocess.CalledProcessError as e:
-            error_msg = f"ffmpeg error: {e.stderr[:200] if e.stderr else str(e)}"
+            error_msg = f"ffmpeg error: {e.stderr[-2000:] if e.stderr else str(e)}"
             return (i, False, error_msg)
+        except OSError as e:
+            return (i, False, str(e))
     
     # Process chapters (parallel or sequential)
+    failures = 0
     if parallel and len(chapters) > 1:
         logger.info(f"Processing {len(chapters)} chapters in parallel (max {max_workers} workers)...")
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -558,6 +624,7 @@ def split_audio_by_chapters(
                         if verbose:
                             logger.info(f"Chapter {i+1}/{len(chapters)}: {chapters[i].title or f'Chapter {i+1}'}")
                     else:
+                        failures += 1
                         logger.error(f"Chapter {i+1} failed: {msg}")
                         pbar.update(1)
     else:
@@ -568,10 +635,11 @@ def split_audio_by_chapters(
                     if verbose:
                         logger.info(f"Chapter {i+1}/{len(chapters)}: {chapter.title or f'Chapter {i+1}'}")
                 else:
+                    failures += 1
                     logger.error(f"Chapter {i+1} failed: {msg}")
     
-    logger.info(f"Successfully split into {len(chapters)} files in {output_dir}")
-    return True
+    logger.info(f"Completed {len(chapters) - failures}/{len(chapters)} chapters in {output_dir}; {failures} failed")
+    return failures == 0
 
 
 def interactive_chapter_selection(chapters: List[Chapter]) -> List[Chapter]:
@@ -617,7 +685,7 @@ def interactive_chapter_selection(chapters: List[Chapter]) -> List[Chapter]:
 
 # Create main CLI group - routes to main when no subcommand provided
 @click.group(invoke_without_command=True)
-@click.version_option(version='0.2.0')
+@click.version_option(version=__version__)
 @click.pass_context
 def cli(ctx):
     """Extract and split audiobook chapters from embedded metadata."""
@@ -645,37 +713,37 @@ def cli(ctx):
 
 
 # Add main as a subcommand (but it's also the default via invoke_without_command)
-@cli.command(name='process')
+@cli.command(name='process', cls=ConfiguredCommand)
 @click.argument('audio_file', type=click.Path(exists=True))
 @click.option('--output', '-o', type=click.Path(), help='Output file for chapter data (JSON)')
 @click.option('--verbose', '-v', is_flag=True, help='Show detailed error messages and tracebacks')
 @click.option('--split', '-s', type=click.Path(), help='Split audio into chapter files in the specified directory')
 @click.option('--format', '-f', type=click.Choice(['m4b', 'm4a', 'mp3', 'wav']), help='Output format (default: auto-detect)')
 @click.option('--dry-run', is_flag=True, help='Preview what would happen without actually splitting')
-@click.option('--skip-existing', is_flag=True, help='Skip chapters that already exist in output directory')
+@click.option('--skip-existing/--no-skip-existing', default=False, help='Skip existing chapters only after audio/duration validation')
 @click.option('--filename-pattern', default='{number:02d} - {title}', help='Filename pattern (default: "{number:02d} - {title}")')
 @click.option('--chapters', help='Chapter range to process (e.g., "1,3,5-7")')
-@click.option('--min-duration', type=float, help='Minimum chapter duration in seconds')
-@click.option('--max-duration', type=float, help='Maximum chapter duration in seconds')
+@click.option('--min-duration', type=click.FloatRange(min=0), help='Minimum chapter duration in seconds')
+@click.option('--max-duration', type=click.FloatRange(min=0), help='Maximum chapter duration in seconds')
 @click.option('--title-pattern', help='Regex pattern to match chapter titles')
 @click.option('--merge', multiple=True, help='Merge chapters (e.g., --merge "1-3" --merge "5-7")')
 @click.option('--bitrate', help='Audio bitrate (e.g., "192k", "256k")')
 @click.option('--codec', help='Audio codec (e.g., "aac", "libmp3lame")')
-@click.option('--preserve-metadata', is_flag=True, help='Preserve metadata (artist, album, etc.) in split files')
-@click.option('--extract-cover', is_flag=True, help='Extract cover art from source file')
-@click.option('--embed-cover', is_flag=True, help='Embed cover art in split files')
+@click.option('--preserve-metadata/--no-preserve-metadata', default=False, help='Preserve metadata (artist, album, etc.) in split files')
+@click.option('--extract-cover/--no-extract-cover', default=False, help='Extract cover art from source file')
+@click.option('--embed-cover/--no-embed-cover', default=False, help='Embed cover art in split files')
 @click.option('--cover-path', type=click.Path(), help='Path to save/extract cover art')
-@click.option('--remove-silence', is_flag=True, help='Remove silence at chapter boundaries')
+@click.option('--remove-silence/--no-remove-silence', default=False, help='Remove silence at chapter boundaries')
 @click.option('--silence-threshold', type=float, default=-50.0, help='Silence threshold in dB (default: -50)')
 @click.option('--silence-duration', type=float, default=0.5, help='Minimum silence duration in seconds (default: 0.5)')
-@click.option('--playlist', is_flag=True, help='Generate M3U playlist file')
+@click.option('--playlist/--no-playlist', default=False, help='Generate M3U playlist file')
 @click.option('--playlist-name', help='Name for playlist file (default: album name or "playlist")')
-@click.option('--statistics', is_flag=True, help='Show chapter statistics')
-@click.option('--validate', is_flag=True, help='Validate chapters for issues')
+@click.option('--statistics/--no-statistics', default=False, help='Show chapter statistics')
+@click.option('--validate/--no-validate', default=False, help='Validate chapters for issues')
 @click.option('--log', type=click.Path(), help='Save operation log to file')
 @click.option('--config', type=click.Path(exists=True), help='Load configuration from file')
-@click.option('--parallel', is_flag=True, help='Process chapters in parallel')
-@click.option('--max-workers', type=int, default=4, help='Maximum parallel workers (default: 4)')
+@click.option('--parallel/--no-parallel', default=False, help='Process chapters in parallel')
+@click.option('--max-workers', type=click.IntRange(min=1), default=4, help='Maximum parallel workers (default: 4)')
 @click.option('--select-interactive', '-i', is_flag=True, help='Interactive chapter selection mode')
 @click.option('--rename', multiple=True, help='Rename chapters (format: "number:new title", e.g., "1:Introduction")')
 @click.option('--rename-interactive', is_flag=True, help='Interactive chapter renaming mode')
@@ -718,22 +786,6 @@ def main(
     
     AUDIO_FILE: Path to the audio file to analyze
     """
-    # Load config - priority: 1. CLI --config, 2. Local directory, 3. Global directory
-    config_obj = None
-    if config:
-        # Explicitly provided config file
-        config_obj = Config(Path(config))
-        click.echo(f"Using config file: {Path(config).resolve()}", err=True)
-    else:
-        # Try to find config file: local directory first, then global
-        found_config = find_config_file()
-        if found_config:
-            try:
-                config_obj = Config(found_config)
-                click.echo(f"Using config file: {found_config.resolve()}", err=True)
-            except Exception as e:
-                if verbose:
-                    click.echo(f"Warning: Could not load config from {found_config}: {e}", err=True)
     
     # Handle interactive selection mode - need to filter chapters before processing
     if select_interactive:
@@ -806,7 +858,6 @@ def main(
         statistics=statistics,
         validate=validate,
         log_file=Path(log) if log else None,
-        config=config_obj,
         parallel=parallel,
         max_workers=max_workers,
     )
@@ -927,7 +978,7 @@ def config_cmd(config_file: Optional[str], format: str, force: bool, user: bool,
         
         click.echo(f"✓ Created default config file: {config_path}")
         click.echo(f"\nYou can now customize it and use it with:")
-        click.echo(f"  yotoize audiobook.m4b --config {config_path} --split ./chapters")
+        click.echo(f"  yotoize process audiobook.m4b --config {config_path} --split ./chapters")
         click.echo(f"\nOr it will be automatically found if placed in a standard location:")
         if user:
             click.echo(f"  - User config directory: {config_path.name} (already created)")
@@ -975,8 +1026,8 @@ def config_cmd(config_file: Optional[str], format: str, force: bool, user: bool,
 @click.option('--extract-cover', is_flag=True, help='Extract cover art')
 @click.option('--embed-cover', is_flag=True, help='Embed cover art')
 @click.option('--playlist', is_flag=True, help='Generate playlists')
-@click.option('--parallel', is_flag=True, help='Process files in parallel')
-@click.option('--max-workers', type=int, default=2, help='Maximum parallel workers')
+@click.option('--parallel', is_flag=True, help='Process chapters in parallel within each file')
+@click.option('--max-workers', type=click.IntRange(min=1), default=4, help='Maximum parallel workers (default: 4)')
 @click.pass_context
 def batch(
     ctx: click.Context,
@@ -1006,48 +1057,35 @@ def batch(
         click.echo("No audio files found to process.", err=True)
         sys.exit(1)
     
+    files_to_process = list(dict.fromkeys(Path(p).resolve() for p in files_to_process))
+    if output_dir:
+        destinations = [str(derive_output_folder_name(p, Path(output_dir))).casefold() for p in files_to_process]
+        if len(set(destinations)) != len(destinations):
+            raise click.ClickException('Multiple inputs resolve to the same output folder; process them separately.')
     click.echo(f"Processing {len(files_to_process)} files...", err=True)
     
     # Process each file
     success_count = 0
     for audio_file in tqdm(files_to_process, desc="Files", disable=verbose):
-        file_output_dir = None
+        args = [str(audio_file), '--skip-existing']
         if output_dir:
-            # Use the derive function to create clean folder names
-            file_output_dir = derive_output_folder_name(Path(audio_file), Path(output_dir))
-        
-        success = process_single_file(
-            audio_path=Path(audio_file),
-            output=None,
-            split=file_output_dir,
-            output_format=format or 'mp3',
-            verbose=verbose,
-            dry_run=False,
-            skip_existing=True,
-            filename_pattern=filename_pattern,
-            chapter_range=None,
-            min_duration=None,
-            max_duration=None,
-            title_pattern=None,
-            merge_ranges=None,
-            bitrate=None,
-            codec=None,
-            preserve_metadata=preserve_metadata,
-            extract_cover=extract_cover,
-            embed_cover=embed_cover,
-            cover_path=None,
-            remove_silence=False,
-            silence_threshold=-50.0,
-            silence_duration=0.5,
-            playlist=playlist,
-            playlist_name=None,
-            statistics=False,
-            validate=False,
-            log_file=None,
-            config=None,
-            parallel=parallel,
-            max_workers=max_workers,
-        )
+            args.extend(['--split', output_dir])
+        for name in ['verbose', 'format', 'filename_pattern', 'preserve_metadata',
+                     'extract_cover', 'embed_cover', 'playlist', 'parallel', 'max_workers']:
+            if ctx.get_parameter_source(name) == click.core.ParameterSource.COMMANDLINE:
+                value = ctx.params[name]
+                args.append('--' + name.replace('_', '-'))
+                if not isinstance(value, bool):
+                    args.append(str(value))
+        try:
+            with main.make_context('process', args, parent=ctx) as process_ctx:
+                main.invoke(process_ctx)
+            success = True
+        except SystemExit as exc:
+            success = exc.code == 0
+        except click.ClickException as exc:
+            exc.show()
+            success = False
         
         if success:
             success_count += 1

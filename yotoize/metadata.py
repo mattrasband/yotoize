@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Dict, Optional, Any
 from mutagen.mp3 import MP3
-from mutagen.mp4 import MP4
+from mutagen.mp4 import MP4, MP4Cover
 from mutagen.id3 import ID3NoHeaderError
 
 
@@ -223,6 +223,8 @@ class MetadataExtractor:
                 return self._extract_mp3_cover(output_path)
             elif self.format in ['.m4b', '.m4a']:
                 return self._extract_m4b_cover(output_path)
+        except OSError:
+            raise
         except Exception:
             pass
         
@@ -244,6 +246,8 @@ class MetadataExtractor:
                             
                             output_path.write_bytes(apic.data)
                             return output_path
+        except OSError:
+            raise
         except Exception:
             pass
         
@@ -261,12 +265,14 @@ class MetadataExtractor:
                     # Determine extension from cover data
                     ext = 'jpg'  # Default
                     if hasattr(cover_data, 'imageformat'):
-                        if cover_data.imageformat == 'PNG':
+                        if cover_data.imageformat == MP4Cover.FORMAT_PNG:
                             ext = 'png'
                     output_path = self.audio_path.parent / f'cover.{ext}'
                 
                 output_path.write_bytes(bytes(cover_data))
                 return output_path
+        except OSError:
+            raise
         except Exception:
             pass
         

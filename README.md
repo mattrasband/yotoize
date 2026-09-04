@@ -115,7 +115,7 @@ The three commands are:
 | --- | --- |
 | `yotoize process <file>` | Inspect / split a single audiobook. This is the main command. |
 | `yotoize config [file]` | Generate or edit a config file. |
-| `yotoize batch ...` | Multi-file processing — **currently broken**, see [Known issues](#known-issues). |
+| `yotoize batch ...` | Process multiple files using the same processing and configuration rules. |
 
 ## How It Works
 
@@ -144,7 +144,7 @@ With no other options, this prints a table of the detected chapters and exits.
 | `--split`, `-s DIR` | Split into chapter files. **Creates a subfolder** inside `DIR` named after the input file (see [Split output](#split-output)) |
 | `--format`, `-f` | `m4b`, `m4a`, `mp3`, or `wav`. Default: derived from the input file (`.m4b`/`.m4a` → `m4b`, everything else → `mp3`) |
 | `--dry-run` | Print the files that would be created without writing anything |
-| `--skip-existing` | Skip chapters whose output file already exists |
+| `--skip-existing` | Skip existing files only when their audio stream and duration validate; invalid files cause a failure |
 
 ### Chapter selection & filtering
 
@@ -314,11 +314,12 @@ Numbering starts at `01`.
 
 ## Configuration files
 
-> **Only four settings are read from config files today:** `split.format`,
-> `split.filename_pattern`, `split.bitrate`, and `split.codec`. Every other key —
-> including the booleans in the generated default config and everything under
-> `[filter]`, `[rename]`, and `[output]` — is parsed but **silently ignored**. Pass those
-> as command-line flags. See [Known issues](#known-issues).
+Settings under `[split]`, `[filter]`, `[rename]`, and `[output]` apply to processing.
+Unknown keys and invalid option values produce an error. Explicit command-line
+options take precedence, including an explicitly supplied default filename pattern.
+Use `--no-embed-cover`, `--no-playlist`, `--no-preserve-metadata`,
+`--no-skip-existing`, `--no-extract-cover`, `--no-remove-silence`,
+`--no-statistics`, `--no-validate`, or `--no-parallel` to override configured flags.
 
 ### Generating one
 
@@ -347,33 +348,43 @@ The user config directory is:
 The path in use is echoed to stderr on every run. Command-line flags always win over
 config values.
 
-### What actually takes effect
+### Example
 
 ```toml
 [split]
-format = "mp3"                              # applied
-filename_pattern = "{number:02d} - {title}" # applied
-bitrate = "192k"                            # applied
-codec = "libmp3lame"                        # applied
+format = "mp3"
+filename_pattern = "{number:02d} - {title}"
+bitrate = "192k"
+codec = "libmp3lame"
+preserve_metadata = true
+embed_cover = true
 ```
 
-`config.example.toml` and `config.example.json` in the repo show the full intended schema,
-but treat everything outside those four keys as aspirational for now.
+`config.example.toml` and `config.example.json` show the available settings.
+
+## Reliable processing
+
+- Splitting returns a non-zero exit code if any chapter fails. Playlists are generated
+  only after all selected chapters succeed.
+- Duplicate output filenames are rejected before encoding. Include `{number}` in
+  custom patterns when chapter titles may repeat.
+- Audio is encoded into temporary files and checked for an audio stream and expected
+  duration before replacing a destination. Failed encoding preserves previous files.
+- `--skip-existing` checks audio and duration (within 0.25 seconds). It does not verify
+  source identity, bitrate, metadata, or full-file decodability. Rerun without it when
+  changing the source or encoding settings; invalid existing files cause an error.
+- `--dry-run` writes no audio, cover, JSON, playlist, or log files.
+
+```bash
+yotoize batch --batch-dir ./audiobooks --output-dir ./out --format mp3
+```
+
+Batch uses discovered configuration, processes files sequentially, and resumes verified
+existing chapters. `--parallel` splits chapters concurrently within each file.
+Each book gets one subfolder; inputs that resolve to the same folder are rejected.
 
 ## Known issues
 
-- **`yotoize batch` crashes.** It calls the processing function without the `rename_map`
-  and `rename_interactive` arguments and dies with
-  `TypeError: process_single_file() missing 2 required positional arguments`. Loop over
-  `yotoize process` in a shell instead:
-
-  ```bash
-  for f in ./audiobooks/*.m4b; do
-    yotoize process "$f" --split ./out --format mp3 --preserve-metadata --skip-existing
-  done
-  ```
-
-- **Most config keys are ignored** — see the note in [Configuration files](#configuration-files).
 - **Bare `yotoize <file>` doesn't work** despite the group being set up to try; use
   `yotoize process <file>`. A few of the tool's own hint messages still print the bare form.
 - **Splitting always re-encodes**, so you lose a generation of quality even when the
@@ -400,9 +411,15 @@ git push origin v0.3.0
 The workflow can also be run manually from the Actions tab against a tag that already
 exists, which re-uploads the binaries to the matching release.
 
-> `yotoize --version` reports a hardcoded `0.2.0` from `yotoize/cli.py`, independent of the
-> tag you release and of the `0.1.0` in `pyproject.toml`. Worth reconciling before cutting
-> a real release.
+`yotoize --version` reads `yotoize.__version__`. Keep that value and `pyproject.toml`
+in sync when releasing.
+
+## Development checks
+
+With FFmpeg installed, run `uv run -m unittest discover -s tests -v`.
+The regression suite creates tiny synthetic audiobooks in temporary directories and
+tests processing, failures, resume, configuration, covers, and batch behavior. CI runs
+these checks on pushes and pull requests.
 
 ## License
 

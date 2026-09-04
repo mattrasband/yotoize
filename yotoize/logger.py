@@ -21,7 +21,9 @@ class YotoizeLogger:
         self.logger.setLevel(logging.DEBUG if verbose else logging.INFO)
         
         # Clear existing handlers
-        self.logger.handlers.clear()
+        for handler in self.logger.handlers[:]:
+            self.logger.removeHandler(handler)
+            handler.close()
         
         # Console handler
         console_handler = logging.StreamHandler(sys.stderr)

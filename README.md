@@ -8,10 +8,12 @@ if the file has no embedded chapters, yotoize can't help.
 
 ## Requirements
 
-- FFmpeg, including `ffprobe` — both must be on your `PATH`. Always required, including
-  when using a [prebuilt binary](#prebuilt-binary).
+A [prebuilt binary](#prebuilt-binary) needs nothing else — it carries its own copy of
+FFmpeg. Installing [from source](#from-source) needs:
+
+- FFmpeg, including `ffprobe` — both must be on your `PATH`
 - Python 3.10–3.13 (3.14+ is not supported by the current dependency set) and
-  [uv](https://docs.astral.sh/uv/) — only when installing [from source](#from-source).
+  [uv](https://docs.astral.sh/uv/)
 
 ### Installing FFmpeg
 
@@ -38,30 +40,56 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ### Prebuilt binary
 
 Each release on the [releases page](https://github.com/mattrasband/yotoize/releases) ships
-a self-contained executable — no Python or uv needed. **FFmpeg is still required
-separately**; it is not bundled.
+a self-contained bundle with FFmpeg included — no Python, no uv, no separate FFmpeg
+install.
 
-| Download | For |
-| --- | --- |
-| `yotoize-macos-arm64.tar.gz` | Apple Silicon Macs (M1 and later) |
-| `yotoize-macos-x86_64.tar.gz` | Intel Macs |
-| `yotoize-windows-x86_64.zip` | Windows (64-bit) |
+| Download | For | Size |
+| --- | --- | --- |
+| `yotoize-macos-arm64.tar.gz` | Apple Silicon Macs (M1 and later) | ~65 MB (~150 MB unpacked) |
+| `yotoize-macos-x86_64.tar.gz` | Intel Macs | ~65 MB (~150 MB unpacked) |
+| `yotoize-windows-x86_64.zip` | Windows (64-bit) | ~75 MB (~200 MB unpacked) |
 
-Each archive has a matching `.sha256` file if you want to verify the download.
+FFmpeg is most of that. Each archive has a matching `.sha256` if you want to verify the
+download.
+
+Each archive unpacks to a `yotoize/` **folder**, not a lone file — the executable needs the
+`_internal/` directory beside it, so move or copy the whole folder rather than pulling the
+binary out of it.
 
 **macOS.** The binaries are unsigned and un-notarized, so Gatekeeper will refuse to run
 them until you clear the quarantine flag:
 
 ```bash
 tar -xzf yotoize-macos-arm64.tar.gz
-xattr -d com.apple.quarantine yotoize
-./yotoize --version
+xattr -dr com.apple.quarantine yotoize
+./yotoize/yotoize --version
 ```
 
-Move it somewhere on your `PATH` (e.g. `/usr/local/bin`) to use it as `yotoize`.
+To get a `yotoize` command, move the folder somewhere permanent and symlink the executable
+onto your `PATH`:
 
-**Windows.** Unzip and run `yotoize.exe` from a terminal. SmartScreen may warn on first
-run because the binary is unsigned — choose "More info" → "Run anyway".
+```bash
+mv yotoize ~/.local/share/yotoize
+ln -s ~/.local/share/yotoize/yotoize /usr/local/bin/yotoize
+```
+
+**Windows.** Unzip and run `yotoize\yotoize.exe` from a terminal. SmartScreen may warn on
+first run because the binary is unsigned — choose "More info" → "Run anyway".
+
+**Using a different FFmpeg.** The bundled copy takes precedence. To point a release build
+at your own FFmpeg instead, set `YOTOIZE_FFMPEG` and `YOTOIZE_FFPROBE` to the executables
+you want:
+
+```bash
+YOTOIZE_FFMPEG=/opt/homebrew/bin/ffmpeg YOTOIZE_FFPROBE=/opt/homebrew/bin/ffprobe \
+  yotoize process audiobook.m4b --split ./out
+```
+
+**Licensing.** yotoize is MIT. The bundled FFmpeg is a separate program under its own
+license — GPL v3 for the macOS builds, LGPL for the Windows build. Each archive carries
+`FFMPEG-NOTICE.txt` with the exact build, its source, and where to obtain FFmpeg's
+corresponding source. Installing from source pulls in no FFmpeg and so carries none of
+this.
 
 ### From source
 
@@ -388,9 +416,11 @@ but treat everything outside those four keys as aspirational for now.
 
 ## Releasing
 
-Pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml),
-which builds the executables on macOS (arm64 + x86_64) and Windows with PyInstaller, smoke
-tests each one, and attaches the archives to a GitHub release for that tag:
+Pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml).
+For each of macOS arm64, macOS x86_64, and Windows x64 it downloads static FFmpeg and
+FFprobe builds, bundles them into a PyInstaller `--onedir` build, smoke tests the result by
+splitting a generated chaptered file with the binary it just built, and attaches the
+archive to the GitHub release for that tag:
 
 ```bash
 git tag v0.3.0
@@ -399,6 +429,11 @@ git push origin v0.3.0
 
 The workflow can also be run manually from the Actions tab against a tag that already
 exists, which re-uploads the binaries to the matching release.
+
+The FFmpeg builds come from [martin-riedl.de](https://ffmpeg.martin-riedl.de/) (macOS, both
+arches) and [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) (Windows, LGPL).
+Neither is pinned to an exact version, so a release picks up whatever those publish that
+day, and an outage on either breaks the build.
 
 > `yotoize --version` reports a hardcoded `0.2.0` from `yotoize/cli.py`, independent of the
 > tag you release and of the `0.1.0` in `pyproject.toml`. Worth reconciling before cutting

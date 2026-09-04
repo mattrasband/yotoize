@@ -8,6 +8,8 @@ from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4
 from mutagen.id3 import ID3NoHeaderError
 
+from .ffmpeg_tools import ffprobe_executable
+
 
 class MetadataExtractor:
     """Extract metadata from audio files."""
@@ -159,7 +161,7 @@ class MetadataExtractor:
         metadata = {}
         try:
             cmd = [
-                'ffprobe',
+                ffprobe_executable(),
                 '-v', 'error',
                 '-show_entries', 'format_tags',
                 '-of', 'json',

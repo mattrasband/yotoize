@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 from .audio_loader import AudioLoader
 from .chapter_detector import extract_chapters, Chapter
+from .ffmpeg_tools import ffmpeg_executable
 from .metadata import MetadataExtractor, build_ffmpeg_metadata_args
 from .config import Config
 from .config_finder import find_config_file, get_user_config_dir
@@ -500,7 +501,7 @@ def split_audio_by_chapters(
         
         # Build ffmpeg command
         cmd = [
-            'ffmpeg',
+            ffmpeg_executable(),
             '-ss', str(actual_start),
             '-i', str(audio_path),
             '-map', '0:a',

@@ -17,6 +17,13 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # macOS: GPL v3 static builds (both arches from one source).
+  MACOS_FFMPEG_BASE: https://ffmpeg.martin-riedl.de/redirect/latest/macos
+  # Windows: LGPL static build -- more permissive than the macOS builds, and
+  # the only ready-made option that ships ffprobe alongside ffmpeg.
+  WINDOWS_FFMPEG_ZIP: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip
+
 jobs:
   build:
     name: Build ${{ matrix.target }}
@@ -27,8 +34,12 @@ jobs:
         include:
           - os: macos-latest
             target: macos-arm64
+            ffmpeg_arch: arm64
+            expected_arch: arm64
           - os: macos-15-intel
             target: macos-x86_64
+            ffmpeg_arch: amd64
+            expected_arch: x86_64
           - os: windows-latest
             target: windows-x86_64
 
@@ -42,43 +53,154 @@ jobs:
           python-version: "3.13"
           enable-cache: true
 
-      - name: Build executable
+      - name: Fetch ffmpeg and ffprobe (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          mkdir -p vendor
+          base="${MACOS_FFMPEG_BASE}/${{ matrix.ffmpeg_arch }}/release"
+          curl -fsSL --retry 3 --retry-delay 5 -o ffmpeg.zip "${base}/ffmpeg.zip"
+          curl -fsSL --retry 3 --retry-delay 5 -o ffprobe.zip "${base}/ffprobe.zip"
+          unzip -oq ffmpeg.zip -d vendor
+          unzip -oq ffprobe.zip -d vendor
+          chmod +x vendor/ffmpeg vendor/ffprobe
+
+          # A wrong-architecture download would only surface as a confusing
+          # crash on a user's machine, so fail here instead.
+          file vendor/ffmpeg | grep -q "${{ matrix.expected_arch }}"
+          file vendor/ffprobe | grep -q "${{ matrix.expected_arch }}"
+          vendor/ffmpeg -version | head -3 | tee vendor/FFMPEG-BUILD-INFO.txt
+
+      - name: Fetch ffmpeg and ffprobe (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p vendor
+          curl -fsSL --retry 3 --retry-delay 5 -o ffmpeg.zip "${WINDOWS_FFMPEG_ZIP}"
+          unzip -oq ffmpeg.zip -d extracted
+          root="$(find extracted -maxdepth 1 -mindepth 1 -type d | head -1)"
+          cp "$root/bin/ffmpeg.exe" "$root/bin/ffprobe.exe" vendor/
+          cp "$root/LICENSE.txt" vendor/FFMPEG-LICENSE.txt
+          vendor/ffmpeg.exe -version | head -3 | tee vendor/FFMPEG-BUILD-INFO.txt
+
+      - name: Build executable (macOS)
+        if: runner.os == 'macOS'
         run: >
           uv run --with pyinstaller
           pyinstaller
-          --onefile
+          --onedir
           --console
           --clean
           --noconfirm
           --name yotoize
           --collect-submodules mutagen
           --hidden-import tomli_w
+          --add-binary "vendor/ffmpeg:."
+          --add-binary "vendor/ffprobe:."
           packaging/entrypoint.py
 
-      # Exercises every top-level import in cli.py (click, mutagen, tqdm,
-      # tomli_w, the yotoize modules), so a bundle missing a dependency fails
-      # here rather than on a user's machine.
-      - name: Smoke test (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          ./dist/yotoize --version
-          ./dist/yotoize process --help
-          ./dist/yotoize config --help
-
-      - name: Smoke test (Windows)
+      - name: Build executable (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        run: >
+          uv run --with pyinstaller
+          pyinstaller
+          --onedir
+          --console
+          --clean
+          --noconfirm
+          --name yotoize
+          --collect-submodules mutagen
+          --hidden-import tomli_w
+          --add-binary "vendor/ffmpeg.exe;."
+          --add-binary "vendor/ffprobe.exe;."
+          packaging/entrypoint.py
+
+      # Splits a real chaptered file using the binary we just built. This is
+      # what catches bundles that import cleanly but die at runtime -- an
+      # earlier build passed --version but crashed on every split because
+      # multiprocessing re-invoked the frozen exe with interpreter flags.
+      - name: Smoke test
+        shell: bash
         run: |
-          .\dist\yotoize.exe --version
-          .\dist\yotoize.exe process --help
-          .\dist\yotoize.exe config --help
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            app="dist/yotoize/yotoize.exe"; ff="vendor/ffmpeg.exe"
+            bundled="dist/yotoize/_internal/ffmpeg.exe"
+          else
+            app="dist/yotoize/yotoize"; ff="vendor/ffmpeg"
+            bundled="dist/yotoize/_internal/ffmpeg"
+          fi
+
+          # The bundled copy must exist and be runnable on this platform.
+          test -f "$bundled"
+          "$bundled" -version > /dev/null
+
+          "$app" --version
+          "$app" process --help > /dev/null
+          "$app" config --help > /dev/null
+
+          mkdir -p smoke && cd smoke
+          "../$ff" -f lavfi -i "sine=frequency=440:duration=30" \
+            -c:a aac -y base.m4a -loglevel error
+          {
+            printf ';FFMETADATA1\ntitle=Smoke Test\nartist=CI\nalbum=Smoke Test\n'
+            printf '[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=10000\ntitle=One\n'
+            printf '[CHAPTER]\nTIMEBASE=1/1000\nSTART=10000\nEND=20000\ntitle=Two\n'
+            printf '[CHAPTER]\nTIMEBASE=1/1000\nSTART=20000\nEND=30000\ntitle=Three\n'
+          } > meta.txt
+          "../$ff" -i base.m4a -i meta.txt -map_metadata 1 -c copy \
+            -y "Smoke Test.m4b" -loglevel error
+
+          "../$app" process "Smoke Test.m4b" --split ./out --format mp3 \
+            --preserve-metadata --playlist
+          found=$(find out -name '*.mp3' | wc -l | tr -d ' ')
+          if [ "$found" -ne 3 ]; then
+            echo "::error::expected 3 chapter files, produced $found"
+            find out -type f
+            exit 1
+          fi
+          echo "Smoke test produced $found chapter files."
+
+      - name: Assemble licensing notice
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f vendor/FFMPEG-LICENSE.txt ]; then
+            cp vendor/FFMPEG-LICENSE.txt dist/yotoize/FFMPEG-LICENSE.txt
+          fi
+          cp LICENSE dist/yotoize/LICENSE 2>/dev/null || true
+          {
+            echo "yotoize bundles FFmpeg (ffmpeg and ffprobe)."
+            echo
+            echo "FFmpeg is a separate program that yotoize runs as a subprocess."
+            echo "yotoize itself is MIT licensed; FFmpeg is licensed under its own"
+            echo "terms, reproduced in FFMPEG-LICENSE.txt where the upstream build"
+            echo "provides them."
+            echo
+            echo "Build target: ${{ matrix.target }}"
+            echo "Obtained from:"
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              echo "  ${WINDOWS_FFMPEG_ZIP}"
+            else
+              echo "  ${MACOS_FFMPEG_BASE}/${{ matrix.ffmpeg_arch }}/release"
+            fi
+            echo
+            echo "Corresponding FFmpeg source is available from:"
+            echo "  https://ffmpeg.org/download.html"
+            echo "  https://git.ffmpeg.org/ffmpeg.git"
+            echo
+            echo "Build details as reported by the bundled binary:"
+            sed 's/^/  /' vendor/FFMPEG-BUILD-INFO.txt
+          } > dist/yotoize/FFMPEG-NOTICE.txt
+          cat dist/yotoize/FFMPEG-NOTICE.txt
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
-          cd dist
-          chmod +x yotoize
-          tar -czf "yotoize-${{ matrix.target }}.tar.gz" yotoize
+          set -euo pipefail
+          tar -czf "yotoize-${{ matrix.target }}.tar.gz" -C dist yotoize
           shasum -a 256 "yotoize-${{ matrix.target }}.tar.gz" \
             > "yotoize-${{ matrix.target }}.tar.gz.sha256"
 
@@ -86,9 +208,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cd dist
           $archive = "yotoize-${{ matrix.target }}.zip"
-          Compress-Archive -Path yotoize.exe -DestinationPath $archive
+          Compress-Archive -Path dist/yotoize -DestinationPath $archive
           $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
           "$hash  $archive" | Out-File -Encoding ascii "$archive.sha256"
 
@@ -96,9 +217,9 @@ jobs:
         with:
           name: yotoize-${{ matrix.target }}
           path: |
-            dist/yotoize-*.tar.gz
-            dist/yotoize-*.zip
-            dist/yotoize-*.sha256
+            yotoize-*.tar.gz
+            yotoize-*.zip
+            yotoize-*.sha256
           if-no-files-found: error
 
   release:

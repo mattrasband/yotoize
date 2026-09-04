@@ -8,9 +8,10 @@ if the file has no embedded chapters, yotoize can't help.
 
 ## Requirements
 
-- Python 3.10–3.13 (3.14+ is not supported by the current dependency set)
-- [uv](https://docs.astral.sh/uv/)
-- FFmpeg, including `ffprobe` — both must be on your `PATH`
+- FFmpeg, including `ffprobe` — both must be on your `PATH`. Always required, including
+  when using a [prebuilt binary](#prebuilt-binary).
+- Python 3.10–3.13 (3.14+ is not supported by the current dependency set) and
+  [uv](https://docs.astral.sh/uv/) — only when installing [from source](#from-source).
 
 ### Installing FFmpeg
 
@@ -33,6 +34,36 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 ## Installation
+
+### Prebuilt binary
+
+Each release on the [releases page](https://github.com/mattrasband/yotoize/releases) ships
+a self-contained executable — no Python or uv needed. **FFmpeg is still required
+separately**; it is not bundled.
+
+| Download | For |
+| --- | --- |
+| `yotoize-macos-arm64.tar.gz` | Apple Silicon Macs (M1 and later) |
+| `yotoize-macos-x86_64.tar.gz` | Intel Macs |
+| `yotoize-windows-x86_64.zip` | Windows (64-bit) |
+
+Each archive has a matching `.sha256` file if you want to verify the download.
+
+**macOS.** The binaries are unsigned and un-notarized, so Gatekeeper will refuse to run
+them until you clear the quarantine flag:
+
+```bash
+tar -xzf yotoize-macos-arm64.tar.gz
+xattr -d com.apple.quarantine yotoize
+./yotoize --version
+```
+
+Move it somewhere on your `PATH` (e.g. `/usr/local/bin`) to use it as `yotoize`.
+
+**Windows.** Unzip and run `yotoize.exe` from a terminal. SmartScreen may warn on first
+run because the binary is unsigned — choose "More info" → "Run anyway".
+
+### From source
 
 **As a standalone tool** (recommended — puts `yotoize` on your `PATH`):
 
@@ -354,6 +385,24 @@ but treat everything outside those four keys as aspirational for now.
   `No chapters found in file metadata.` and a non-zero exit.
 - **No audio analysis or AI detection.** Chapter boundaries come only from the publisher's
   markers, which makes this fast and exact — but useless on unmarked files.
+
+## Releasing
+
+Pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml),
+which builds the executables on macOS (arm64 + x86_64) and Windows with PyInstaller, smoke
+tests each one, and attaches the archives to a GitHub release for that tag:
+
+```bash
+git tag v0.3.0
+git push origin v0.3.0
+```
+
+The workflow can also be run manually from the Actions tab against a tag that already
+exists, which re-uploads the binaries to the matching release.
+
+> `yotoize --version` reports a hardcoded `0.2.0` from `yotoize/cli.py`, independent of the
+> tag you release and of the `0.1.0` in `pyproject.toml`. Worth reconciling before cutting
+> a real release.
 
 ## License
 

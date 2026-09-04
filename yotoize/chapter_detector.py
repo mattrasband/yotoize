@@ -6,8 +6,6 @@ from pathlib import Path
 from typing import List, Optional
 from dataclasses import dataclass
 
-from .ffmpeg_tools import ffprobe_executable
-
 
 @dataclass
 class Chapter:
@@ -37,7 +35,7 @@ def extract_chapters(audio_path: str) -> List[Chapter]:
     try:
         # Use ffprobe to get chapter information
         cmd = [
-            ffprobe_executable(),
+            'ffprobe',
             '-v', 'error',
             '-show_chapters',
             '-of', 'json',

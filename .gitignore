@@ -22,8 +22,6 @@ wheels/
 
 # PyInstaller
 *.spec
-# ffmpeg/ffprobe downloaded by the release workflow
-vendor/
 
 # Virtual environments
 venv/

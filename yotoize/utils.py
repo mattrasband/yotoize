@@ -4,7 +4,6 @@ import re
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict
 from .chapter_detector import Chapter
-from .ffmpeg_tools import ffmpeg_executable
 
 
 def parse_chapter_range(chapter_str: str, total_chapters: int) -> List[int]:
@@ -172,7 +171,7 @@ def detect_silence(audio_path: Path, start_time: float, end_time: float,
         
         # Use ffmpeg silencedetect filter
         cmd = [
-            ffmpeg_executable(),
+            'ffmpeg',
             '-ss', str(start_time),
             '-i', str(audio_path),
             '-t', str(end_time - start_time),

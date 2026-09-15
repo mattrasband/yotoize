@@ -152,6 +152,51 @@ def format_filename(pattern: str, chapter: Chapter, chapter_num: int, total_chap
     return filename
 
 
+# Codecs each container can hold as-is, so a chapter can be split out without
+# touching the audio.
+_CONTAINER_CODECS = {
+    'm4b': {'aac', 'alac'},
+    'm4a': {'aac', 'alac'},
+    'mp3': {'mp3'},
+    'wav': {'pcm_s16le', 'pcm_s24le', 'pcm_u8', 'pcm_f32le'},
+}
+
+
+def probe_audio_codec(audio_path: Path) -> Optional[str]:
+    """Return the codec of the first audio stream, or None if it can't be read."""
+    try:
+        import json
+        import subprocess
+
+        cmd = [
+            'ffprobe',
+            '-v', 'error',
+            '-select_streams', 'a:0',
+            '-show_entries', 'stream=codec_name',
+            '-of', 'json',
+            str(audio_path),
+        ]
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            text=True,
+        )
+        streams = json.loads(result.stdout).get('streams') or []
+        return streams[0].get('codec_name') if streams else None
+    except Exception:
+        # Unreadable codec just means we fall back to re-encoding.
+        return None
+
+
+def can_stream_copy(source_codec: Optional[str], output_format: str) -> bool:
+    """Whether the source audio can be copied into the output container untouched."""
+    if not source_codec:
+        return False
+    return source_codec in _CONTAINER_CODECS.get(output_format, set())
+
+
 def detect_silence(audio_path: Path, start_time: float, end_time: float, 
                   threshold: float = -50.0, duration: float = 0.5) -> Tuple[float, float]:
     """Detect silence at the beginning and end of an audio segment.

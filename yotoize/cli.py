@@ -22,7 +22,8 @@ from .config_finder import find_config_file, get_user_config_dir
 from .utils import (
     filter_chapters, format_filename, validate_chapters, 
     calculate_statistics, detect_silence, parse_chapter_range,
-    rename_chapters, interactive_chapter_renaming
+    rename_chapters, interactive_chapter_renaming,
+    probe_audio_codec, can_stream_copy
 )
 from .playlist import generate_m3u_playlist
 from .logger import YotoizeLogger
@@ -504,19 +505,46 @@ def split_audio_by_chapters(
     logger.info(f"Output directory: {output_dir}")
     logger.info(f"Output format: {output_format}")
     
-    # Determine codec and bitrate
-    if output_format in ['m4b', 'm4a']:
-        default_codec = codec or 'aac'
-        default_bitrate = bitrate or '192k'
-    elif output_format == 'mp3':
-        default_codec = codec or 'libmp3lame'
-        default_bitrate = bitrate or '192k'
-    elif output_format == 'wav':
-        default_codec = codec or 'pcm_s16le'
+    # Determine codec and bitrate.
+    #
+    # Splitting a file at chapter boundaries does not change the audio, so
+    # re-encoding can only cost quality: audiobook sources are already lossy,
+    # and a second lossy pass degrades them at any bitrate. It also inflates a
+    # low-bitrate source to several times its original size. Copy the stream
+    # untouched whenever the output container can hold it, and re-encode only
+    # when the caller actually asks for it.
+    fallback_codec = {
+        'm4b': 'aac',
+        'm4a': 'aac',
+        'mp3': 'libmp3lame',
+        'wav': 'pcm_s16le',
+    }.get(output_format, 'aac')
+    fallback_bitrate = None if output_format == 'wav' else '192k'
+
+    if codec:
+        # Explicit codec wins, including an explicit 'copy'.
+        default_codec = codec
+        default_bitrate = bitrate
+    elif bitrate:
+        # Asking for a bitrate is asking for a re-encode.
+        default_codec = fallback_codec
+        default_bitrate = bitrate
+    elif can_stream_copy(probe_audio_codec(audio_path), output_format):
+        default_codec = 'copy'
         default_bitrate = None
     else:
-        default_codec = codec or 'aac'
-        default_bitrate = bitrate or '192k'
+        # Format conversion, or a codec the container can't hold.
+        default_codec = fallback_codec
+        default_bitrate = fallback_bitrate
+
+    if default_codec == 'copy':
+        # -b:a is meaningless for a stream copy and ffmpeg warns about it.
+        default_bitrate = None
+        logger.info("Copying audio stream without re-encoding")
+    elif default_bitrate:
+        logger.info(f"Re-encoding to {default_codec} @ {default_bitrate}")
+    else:
+        logger.info(f"Re-encoding to {default_codec}")
     
     # Build metadata args
     metadata_args = []

@@ -16,6 +16,7 @@ from click.testing import CliRunner
 from mutagen.mp4 import MP4, MP4Cover
 
 from yotoize.cli import cli
+from yotoize.utils import can_stream_copy
 
 
 @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg required')
@@ -44,6 +45,41 @@ class ProcessingTests(unittest.TestCase):
 
     def split(self, *args):
         return self.run_process('--split', str(self.out), '--format', 'mp3', *args)
+
+    def probe_audio(self, path):
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-select_streams', 'a:0',
+             '-show_entries', 'stream=codec_name,bit_rate', '-of', 'json', str(path)],
+            check=True, capture_output=True, text=True)
+        stream = json.loads(result.stdout)['streams'][0]
+        return stream['codec_name'], int(stream.get('bit_rate') or 0)
+
+    def test_split_to_same_container_copies_the_stream(self):
+        """A split must not re-encode: cutting at a chapter boundary does not
+        change the audio, and a second lossy pass only degrades it."""
+        result = self.run_process('--split', str(self.out))
+        self.assertEqual(result.exit_code, 0, result.output)
+        source_codec, source_rate = self.probe_audio(self.source)
+        chapters = list((self.out / 'Book').glob('*.m4b'))
+        self.assertEqual(len(chapters), 2)
+        for chapter in chapters:
+            codec, rate = self.probe_audio(chapter)
+            self.assertEqual(codec, source_codec)
+            self.assertAlmostEqual(rate, source_rate, delta=source_rate * 0.25)
+
+    def test_explicit_bitrate_still_re_encodes(self):
+        """Asking for a bitrate is asking for a re-encode."""
+        _, source_rate = self.probe_audio(self.source)
+        result = self.run_process('--split', str(self.out), '--bitrate', '32k')
+        self.assertEqual(result.exit_code, 0, result.output)
+        _, rate = self.probe_audio(next((self.out / 'Book').glob('*.m4b')))
+        self.assertLess(rate, source_rate * 0.8)
+
+    def test_format_change_re_encodes(self):
+        """A different container cannot hold the source stream as-is."""
+        self.assertEqual(self.split().exit_code, 0)
+        codec, _ = self.probe_audio(next((self.out / 'Book').glob('*.mp3')))
+        self.assertEqual(codec, 'mp3')
 
     def test_successful_split_and_playlist(self):
         result = self.split('--playlist')
@@ -181,3 +217,20 @@ class ProcessingTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class StreamCopyCompatibilityTests(unittest.TestCase):
+    def test_container_accepts_matching_codec(self):
+        self.assertTrue(can_stream_copy('aac', 'm4b'))
+        self.assertTrue(can_stream_copy('alac', 'm4a'))
+        self.assertTrue(can_stream_copy('mp3', 'mp3'))
+        self.assertTrue(can_stream_copy('pcm_s16le', 'wav'))
+
+    def test_container_rejects_foreign_codec(self):
+        self.assertFalse(can_stream_copy('mp3', 'm4b'))
+        self.assertFalse(can_stream_copy('aac', 'mp3'))
+        self.assertFalse(can_stream_copy('aac', 'wav'))
+
+    def test_unknown_inputs_fall_back_to_re_encoding(self):
+        self.assertFalse(can_stream_copy(None, 'm4b'))
+        self.assertFalse(can_stream_copy('aac', 'ogg'))

@@ -49,16 +49,45 @@ separately**; it is not bundled.
 
 Each archive has a matching `.sha256` file if you want to verify the download.
 
-**macOS.** The binaries are unsigned and un-notarized, so Gatekeeper will refuse to run
-them until you clear the quarantine flag:
+#### Running the macOS build
+
+The macOS binaries are ad-hoc signed by the build, but they are **not** signed with an
+Apple Developer ID and **not** notarized, so Gatekeeper rejects them. This is temporary
+until the release is signed properly.
+
+The symptom is unhelpful: macOS tags the download with a quarantine flag, the flag is
+inherited by the extracted binary, and the first run then **hangs with no output** while
+Gatekeeper waits on a confirmation dialog — rather than printing an error.
+
+Clearing the flag is all it takes:
 
 ```bash
+# Optional but recommended: check the download first.
+shasum -a 256 -c yotoize-macos-arm64.tar.gz.sha256
+
 tar -xzf yotoize-macos-arm64.tar.gz
-xattr -d com.apple.quarantine yotoize
+
+# Remove the quarantine flag. -c clears every extended attribute and, unlike
+# `xattr -d com.apple.quarantine`, does not fail when the flag isn't there
+# (curl and wget downloads are not quarantined; browser downloads are).
+xattr -c yotoize
+
 ./yotoize --version
 ```
 
-Move it somewhere on your `PATH` (e.g. `/usr/local/bin`) to use it as `yotoize`.
+If you would rather not use the terminal for it, run the binary once and let it be
+blocked, then approve it in **System Settings → Privacy & Security**, where a
+"yotoize was blocked" message appears with an **Open Anyway** button.
+
+To confirm what state a copy is in:
+
+```bash
+xattr yotoize              # lists com.apple.quarantine if still flagged
+codesign -dv yotoize       # shows "Signature=adhoc"
+spctl -a -vv -t execute yotoize   # "rejected" until the build is notarized
+```
+
+Then move it onto your `PATH` (e.g. `/usr/local/bin`) to use it as `yotoize`.
 
 **Windows.** Unzip and run `yotoize.exe` from a terminal. SmartScreen may warn on first
 run because the binary is unsigned — choose "More info" → "Run anyway".

@@ -121,12 +121,18 @@ The three commands are:
 
 `ffprobe -show_chapters` reads the chapter markers embedded in the file. For each chapter
 yotoize gets a start time, end time, and (usually) a title. When `--split` is given, each
-chapter is re-encoded with `ffmpeg` into its own file, carrying the chapter title as the
+chapter is written by `ffmpeg` into its own file, carrying the chapter title as the
 `title` tag.
 
-Note that splitting **re-encodes** rather than stream-copies (default 192k AAC for
-m4b/m4a, 192k libmp3lame for mp3, pcm_s16le for wav). Use `--bitrate` / `--codec` to
-change that.
+Splitting **copies the audio stream untouched** whenever the output container can hold it
+(mp4 holds aac/alac, mp3 holds mp3, wav holds pcm). Cutting at a chapter boundary does not
+change the audio, so re-encoding gains nothing and costs a generation of quality — sources
+are usually already lossy. It also inflates a low-bitrate source: a 16 kbps audiobook
+re-encoded at the old 192k default tripled in size while sounding worse.
+
+Re-encoding happens only when you ask for it — `--codec` or `--bitrate` — or when
+`--format` names a container that cannot hold the source stream. In that case the defaults
+are 192k AAC for m4b/m4a, 192k libmp3lame for mp3, and pcm_s16le for wav.
 
 ## Usage
 
@@ -184,8 +190,10 @@ read at all and those placeholders expand to empty strings.
 
 | Option | Description |
 | --- | --- |
-| `--bitrate` | e.g. `"192k"`, `"256k"`. Default 192k; ignored for `wav` |
-| `--codec` | e.g. `"aac"`, `"libmp3lame"`, `"pcm_s16le"` |
+| `--bitrate` | e.g. `"192k"`, `"256k"`. Forces a re-encode; ignored for `wav` |
+| `--codec` | e.g. `"aac"`, `"libmp3lame"`, `"pcm_s16le"`. `"copy"` forces a stream copy |
+
+Neither is needed for a plain split: the stream is copied as-is when the container allows.
 
 ### Filename pattern
 
@@ -387,8 +395,6 @@ Each book gets one subfolder; inputs that resolve to the same folder are rejecte
 
 - **Bare `yotoize <file>` doesn't work** despite the group being set up to try; use
   `yotoize process <file>`. A few of the tool's own hint messages still print the bare form.
-- **Splitting always re-encodes**, so you lose a generation of quality even when the
-  output format matches the input.
 
 ## Limitations
 
